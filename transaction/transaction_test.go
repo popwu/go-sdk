@@ -291,7 +291,7 @@ func TestTransactionFee(t *testing.T) {
 	require.GreaterOrEqual(t, totalInputs, totalOutputs+fee)
 
 	// Print the fee for informational purposes
-	t.Logf("Computed fee: %d satoshis", fee)
+	// t.Logf("Computed fee: %d satoshis", fee)
 }
 
 func TestAtomicBEEF(t *testing.T) {
