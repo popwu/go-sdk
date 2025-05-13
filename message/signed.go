@@ -23,7 +23,10 @@ type SignedMessage struct {
 func Sign(message []byte, signer *ec.PrivateKey, verifier *ec.PublicKey) ([]byte, error) {
 	recipientAnyone := verifier == nil
 	if recipientAnyone {
-		_, verifier = ec.PrivateKeyFromBytes([]byte{1})
+		// 使用32字节大端序整数值1作为特殊私钥，符合BRC-77协议
+		specialKey := make([]byte, 32)
+		specialKey[31] = 1 // 大端序表示的整数1
+		_, verifier = ec.PrivateKeyFromBytes(specialKey)
 	}
 
 	keyID := make([]byte, 32)
@@ -60,28 +63,58 @@ func Sign(message []byte, signer *ec.PrivateKey, verifier *ec.PublicKey) ([]byte
 
 func Verify(message []byte, sig []byte, recipient *ec.PrivateKey) (bool, error) {
 	counter := 4
+	// 检查签名长度是否足够
+	if len(sig) < counter {
+		return false, fmt.Errorf("signature too short: expected at least %d bytes, got %d", counter, len(sig))
+	}
+
 	messageVersion := sig[:counter]
 	if !bytes.Equal(messageVersion, VERSION_BYTES) {
 		return false, fmt.Errorf("message version mismatch: Expected %x, received %x", VERSION_BYTES, messageVersion)
 	}
+
+	// 检查签名长度是否足够提取公钥
+	if len(sig) < counter+33 {
+		return false, fmt.Errorf("signature too short for pubkey: expected at least %d bytes, got %d", counter+33, len(sig))
+	}
+
 	pubKeyBytes := sig[counter : counter+33]
 	counter += 33
+
 	signer, err := ec.ParsePubKey(pubKeyBytes)
 	if err != nil {
 		return false, err
 	}
+
+	// 检查签名长度是否足够提取verifierFirst
+	if len(sig) <= counter {
+		return false, fmt.Errorf("signature too short for verifierFirst: expected at least %d bytes, got %d", counter+1, len(sig))
+	}
+
 	verifierFirst := sig[counter]
 	if verifierFirst == 0 {
-		recipient, _ = ec.PrivateKeyFromBytes([]byte{1})
+		// 根据BRC-77协议，当Verifier ID为0x00时，表示"任何人可验证"模式
+		// 使用32字节大端序整数值1作为特殊私钥，与TypeScript端保持一致
+		specialKey := make([]byte, 32)
+		specialKey[31] = 1 // 大端序表示的整数1
+		recipient, _ = ec.PrivateKeyFromBytes(specialKey)
 		counter++
 	} else {
 		counter++
+
+		// 检查签名长度是否足够提取verifierRest
+		if len(sig) < counter+32 {
+			return false, fmt.Errorf("signature too short for verifierRest: expected at least %d bytes, got %d", counter+32, len(sig))
+		}
+
 		verifierRest := sig[counter : counter+32]
 		counter += 32
 		verifierDER := append([]byte{verifierFirst}, verifierRest...)
+
 		if recipient == nil {
 			return false, nil
 		}
+
 		recipientDER := recipient.PubKey().Compressed()
 		if !bytes.Equal(verifierDER, recipientDER) {
 			errorStr := "the recipient public key is %x but the signature requres the recipient to have public key %x"
@@ -89,20 +122,39 @@ func Verify(message []byte, sig []byte, recipient *ec.PrivateKey) (bool, error) 
 			return false, err
 		}
 	}
+
+	// 检查签名长度是否足够提取keyID
+	if len(sig) < counter+32 {
+		return false, fmt.Errorf("signature too short for keyID: expected at least %d bytes, got %d", counter+32, len(sig))
+	}
+
 	keyID := sig[counter : counter+32]
 	counter += 32
+
+	// 检查签名长度是否足够提取signatureDER
+	if len(sig) <= counter {
+		return false, fmt.Errorf("signature too short for signatureDER: expected more than %d bytes, got %d", counter, len(sig))
+	}
+
 	signatureDER := sig[counter:]
 	signature, err := ec.FromDER(signatureDER)
 	if err != nil {
 		return false, err
 	}
+
 	keyIDBase64 := base64.StdEncoding.EncodeToString(keyID)
 	invoiceNumber := "2-message signing-" + keyIDBase64
+
+	// 使用PublicKey.DeriveChild方法，与TypeScript端保持一致
 	signingKey, err := signer.DeriveChild(recipient, invoiceNumber)
 	if err != nil {
 		return false, err
 	}
-	verified := signature.Verify(message, signingKey)
-	return verified, nil
 
+	// 直接使用原始消息进行验证
+	// 注意：PublicKey.Verify方法已经在内部对消息进行了SHA256哈希处理
+	// 这与TypeScript端的实现一致，其中也在verify方法内部进行了哈希处理
+	verified := signingKey.Verify(message, signature)
+
+	return verified, nil
 }
