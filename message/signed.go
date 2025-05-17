@@ -21,12 +21,16 @@ type SignedMessage struct {
 }
 
 func Sign(message []byte, signer *ec.PrivateKey, verifier *ec.PublicKey) ([]byte, error) {
+	// 注意：调用此函数前，消息应该已经进行了 SHA256 哈希处理
+	// TypeScript 实现在内部进行哈希处理，而 Go 实现则期望输入已经是哈希值
+
 	recipientAnyone := verifier == nil
 	if recipientAnyone {
 		// 使用32字节大端序整数值1作为特殊私钥，符合BRC-77协议
 		specialKey := make([]byte, 32)
 		specialKey[31] = 1 // 大端序表示的整数1
-		_, verifier = ec.PrivateKeyFromBytes(specialKey)
+		anyonePrivKey, _ := ec.PrivateKeyFromBytes(specialKey)
+		verifier = anyonePrivKey.PubKey()
 	}
 
 	keyID := make([]byte, 32)
@@ -36,6 +40,7 @@ func Sign(message []byte, signer *ec.PrivateKey, verifier *ec.PublicKey) ([]byte
 	}
 	keyIDBase64 := base64.StdEncoding.EncodeToString(keyID)
 	invoiceNumber := "2-message signing-" + keyIDBase64
+	// 使用正确的参数顺序调用DeriveChild方法
 	signingPriv, err := signer.DeriveChild(verifier, invoiceNumber)
 	if err != nil {
 		return nil, err
@@ -92,6 +97,7 @@ func Verify(message []byte, sig []byte, recipient *ec.PrivateKey) (bool, error) 
 	}
 
 	verifierFirst := sig[counter]
+
 	if verifierFirst == 0 {
 		// 根据BRC-77协议，当Verifier ID为0x00时，表示"任何人可验证"模式
 		// 使用32字节大端序整数值1作为特殊私钥，与TypeScript端保持一致
@@ -145,7 +151,9 @@ func Verify(message []byte, sig []byte, recipient *ec.PrivateKey) (bool, error) 
 	keyIDBase64 := base64.StdEncoding.EncodeToString(keyID)
 	invoiceNumber := "2-message signing-" + keyIDBase64
 
-	// 使用PublicKey.DeriveChild方法，与TypeScript端保持一致
+	// 使用DeriveChild方法，与TypeScript端保持一致
+	// 在TypeScript中，派生密钥是通过signer.deriveChild(verifier, invoiceNumber)完成的
+	// 在Go中，我们需要使用公钥的DeriveChild方法
 	signingKey, err := signer.DeriveChild(recipient, invoiceNumber)
 	if err != nil {
 		return false, err
